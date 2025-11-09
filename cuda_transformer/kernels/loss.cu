@@ -193,9 +193,9 @@ __global__ void compute_accuracy_kernel(
     int seq_len,
     int vocab_size
 ) {
-    extern __shared__ int sdata[];
-    int* s_correct = sdata;
-    int* s_total = sdata + blockDim.x;
+    extern __shared__ int isdata[];
+    int* s_correct = isdata;
+    int* s_total = isdata + blockDim.x;
 
     int tid = threadIdx.x;
     int idx = blockIdx.x * blockDim.x + tid;
