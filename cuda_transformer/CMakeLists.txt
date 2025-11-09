@@ -48,7 +48,7 @@ set(CUDA_SOURCES
 set(CPP_SOURCES
     src/tensor.cpp
     src/layers.cpp
-    src/transformer.cpp
+    src/model.cpp
     src/optimizer.cpp
     src/trainer.cpp
     src/metrics.cpp
