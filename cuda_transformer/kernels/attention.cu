@@ -236,7 +236,7 @@ void attention_forward(
     int head_dim,
     const float* mask
 ) {
-    float scale = 1.0f / sqrtf((float)head_dim);
+    float attn_scale = 1.0f / sqrtf((float)head_dim);
 
     // 1. Compute attention scores: Scores = Q @ K^T
     //    Q: [Bh, N, d], K: [Bh, N, d]  (note: K will be transposed)
@@ -252,7 +252,7 @@ void attention_forward(
     }
 
     // 2. Scale scores
-    scale(scores_buffer, scale, batch_heads * seq_len * seq_len);
+    scale(scores_buffer, attn_scale, batch_heads * seq_len * seq_len);
 
     // 3. Apply mask if provided
     if (mask != nullptr) {
@@ -299,7 +299,7 @@ void attention_backward(
     int head_dim,
     const float* mask
 ) {
-    float scale = 1.0f / sqrtf((float)head_dim);
+    float attn_scale = 1.0f / sqrtf((float)head_dim);
 
     // Backward through: Output = Attn @ V
     for (int bh = 0; bh < batch_heads; bh++) {
@@ -319,7 +319,7 @@ void attention_backward(
                     batch_heads, seq_len, seq_len);
 
     // Backward through scaling
-    scale(grad_scores_buffer, scale, batch_heads * seq_len * seq_len);
+    scale(grad_scores_buffer, attn_scale, batch_heads * seq_len * seq_len);
 
     // Note: Mask backward is not needed (mask is constant)
 
