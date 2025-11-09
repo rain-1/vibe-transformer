@@ -1,6 +1,12 @@
 /**
- * STUB - TO BE IMPLEMENTED
+ * Trainer implementation - TODO: Complete implementation
  */
 
-// TODO: Implement according to header file
+#include <iostream>
 
+namespace tiny_transformer {
+
+// Minimal stub to allow compilation
+// Full trainer implementation TODO
+
+} // namespace tiny_transformer
