@@ -37,6 +37,7 @@ class TrainingConfig:
     dropout: float = 0.0  # Disable for initial debugging
     use_rms_norm: bool = False
     use_sinusoidal_pos: bool = False  # Use sinusoidal position encoding
+    residual_scale: float = None  # Residual scaling factor (None = auto: 1/sqrt(2*n_blocks))
 
     # Training config
     batch_size: int = 32
@@ -539,11 +540,14 @@ def train(config: TrainingConfig, task: str = "copy"):
         n_blocks=config.n_blocks,
         dropout=config.dropout,
         use_rms_norm=config.use_rms_norm,
-        use_sinusoidal_pos=config.use_sinusoidal_pos
+        use_sinusoidal_pos=config.use_sinusoidal_pos,
+        residual_scale=config.residual_scale
     ).to(config.device)
 
     num_params = model.count_parameters()
     print(f"Model parameters: {num_params:,}")
+    if config.n_blocks > 1:
+        print(f"Residual scaling: {model.residual_scale:.4f} (1/sqrt(2*{config.n_blocks}))")
     print()
 
     # Create optimizer

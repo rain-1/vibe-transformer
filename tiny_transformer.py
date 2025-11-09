@@ -317,13 +317,22 @@ class TinyTransformer(nn.Module):
         n_blocks: int = 1,
         dropout: float = 0.1,
         use_rms_norm: bool = False,
-        use_sinusoidal_pos: bool = False
+        use_sinusoidal_pos: bool = False,
+        residual_scale: float = None
     ):
         super().__init__()
 
         self.d_model = d_model
         self.max_seq_len = max_seq_len
         self.use_sinusoidal_pos = use_sinusoidal_pos
+        self.n_blocks = n_blocks
+
+        # Auto-compute residual scale if not provided
+        # Standard practice: scale by 1/sqrt(2*n_blocks) for gradient stability
+        # Each block has 2 residual connections (attention + FFN)
+        if residual_scale is None:
+            residual_scale = 1.0 / math.sqrt(2.0 * n_blocks)
+        self.residual_scale = residual_scale
 
         # Embeddings
         self.token_embedding = nn.Embedding(vocab_size, d_model)
@@ -334,9 +343,9 @@ class TinyTransformer(nn.Module):
         else:
             self.position_embedding = nn.Embedding(max_seq_len, d_model)
 
-        # Transformer blocks
+        # Transformer blocks with scaled residuals
         self.blocks = nn.ModuleList([
-            TransformerBlock(d_model, n_heads, d_ff, dropout, use_rms_norm)
+            TransformerBlock(d_model, n_heads, d_ff, dropout, use_rms_norm, residual_scale)
             for _ in range(n_blocks)
         ])
 
