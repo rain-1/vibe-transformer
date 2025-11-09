@@ -36,6 +36,7 @@ class TrainingConfig:
     n_blocks: int = 1
     dropout: float = 0.0  # Disable for initial debugging
     use_rms_norm: bool = False
+    use_sinusoidal_pos: bool = False  # Use sinusoidal position encoding
 
     # Training config
     batch_size: int = 32
@@ -537,7 +538,8 @@ def train(config: TrainingConfig, task: str = "copy"):
         max_seq_len=config.max_seq_len,
         n_blocks=config.n_blocks,
         dropout=config.dropout,
-        use_rms_norm=config.use_rms_norm
+        use_rms_norm=config.use_rms_norm,
+        use_sinusoidal_pos=config.use_sinusoidal_pos
     ).to(config.device)
 
     num_params = model.count_parameters()

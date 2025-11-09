@@ -63,6 +63,53 @@ class StableLayerNorm(nn.Module):
         return self.weight * normalized + self.bias
 
 
+class SinusoidalPositionEncoding(nn.Module):
+    """
+    Sinusoidal position encoding from 'Attention is All You Need'.
+
+    PE(pos, 2i)   = sin(pos / 10000^(2i/d_model))
+    PE(pos, 2i+1) = cos(pos / 10000^(2i/d_model))
+
+    Benefits:
+    - No learned parameters (reduces model size)
+    - Can extrapolate to longer sequences than seen in training
+    - Encodes relative positions naturally
+    """
+
+    def __init__(self, d_model: int, max_seq_len: int = 5000):
+        super().__init__()
+        self.d_model = d_model
+
+        # Create position encoding matrix
+        pe = torch.zeros(max_seq_len, d_model)
+        position = torch.arange(0, max_seq_len, dtype=torch.float).unsqueeze(1)
+
+        # Compute the div term: 10000^(2i/d_model) = exp(2i * -log(10000) / d_model)
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
+        )
+
+        # Apply sin to even indices
+        pe[:, 0::2] = torch.sin(position * div_term)
+
+        # Apply cos to odd indices
+        pe[:, 1::2] = torch.cos(position * div_term)
+
+        # Register as buffer (not a parameter, but part of state)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: Input tensor of shape (batch, seq_len, d_model)
+
+        Returns:
+            Position encodings of shape (batch, seq_len, d_model)
+        """
+        seq_len = x.size(1)
+        return self.pe[:seq_len, :].unsqueeze(0).expand(x.size(0), -1, -1)
+
+
 class MultiHeadAttention(nn.Module):
     """
     Multi-head self-attention with numerical stability features.
@@ -269,16 +316,23 @@ class TinyTransformer(nn.Module):
         max_seq_len: int,
         n_blocks: int = 1,
         dropout: float = 0.1,
-        use_rms_norm: bool = False
+        use_rms_norm: bool = False,
+        use_sinusoidal_pos: bool = False
     ):
         super().__init__()
 
         self.d_model = d_model
         self.max_seq_len = max_seq_len
+        self.use_sinusoidal_pos = use_sinusoidal_pos
 
         # Embeddings
         self.token_embedding = nn.Embedding(vocab_size, d_model)
-        self.position_embedding = nn.Embedding(max_seq_len, d_model)
+
+        # Position encoding: sinusoidal (fixed) or learned
+        if use_sinusoidal_pos:
+            self.position_encoding = SinusoidalPositionEncoding(d_model, max_seq_len)
+        else:
+            self.position_embedding = nn.Embedding(max_seq_len, d_model)
 
         # Transformer blocks
         self.blocks = nn.ModuleList([
@@ -303,7 +357,10 @@ class TinyTransformer(nn.Module):
         # Token embeddings
         std = 1.0 / math.sqrt(self.d_model)
         nn.init.normal_(self.token_embedding.weight, mean=0.0, std=std)
-        nn.init.normal_(self.position_embedding.weight, mean=0.0, std=std)
+
+        # Position embeddings (only if using learned positions)
+        if not self.use_sinusoidal_pos:
+            nn.init.normal_(self.position_embedding.weight, mean=0.0, std=std)
 
         # Output projection
         nn.init.normal_(self.output_projection.weight, mean=0.0, std=std)
@@ -329,12 +386,15 @@ class TinyTransformer(nn.Module):
         """
         batch_size, seq_len = x.shape
 
-        # Create position indices
-        positions = torch.arange(seq_len, device=x.device).unsqueeze(0).expand(batch_size, -1)
-
-        # Embed tokens and positions
+        # Embed tokens
         token_emb = self.token_embedding(x)  # (batch, seq_len, d_model)
-        pos_emb = self.position_embedding(positions)
+
+        # Add position encoding
+        if self.use_sinusoidal_pos:
+            pos_emb = self.position_encoding(token_emb)
+        else:
+            positions = torch.arange(seq_len, device=x.device).unsqueeze(0).expand(batch_size, -1)
+            pos_emb = self.position_embedding(positions)
 
         # Combine embeddings
         h = token_emb + pos_emb
