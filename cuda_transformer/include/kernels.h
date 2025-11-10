@@ -102,22 +102,36 @@ void rmsnorm_backward(
 // ============================================================================
 
 // Scaled dot-product attention
-// Q, K, V: [batch, n_heads, seq_len, head_dim]
-// Output: [batch, n_heads, seq_len, head_dim]
-// Attention scores: [batch, n_heads, seq_len, seq_len]
+// Q, K, V: [batch_heads, seq_len, head_dim]
+// Output: [batch_heads, seq_len, head_dim]
 void attention_forward(
-    const float* Q, const float* K, const float* V,
-    float* output, float* attn_scores,  // Save scores for backward
-    int batch_size, int n_heads, int seq_len, int head_dim,
-    float scale, const float* mask = nullptr
+    const float* Q,
+    const float* K,
+    const float* V,
+    float* output,
+    float* scores_buffer,
+    float* attn_weights_buffer,
+    int batch_heads,
+    int seq_len,
+    int head_dim,
+    const float* mask = nullptr
 );
 
 void attention_backward(
-    const float* grad_output, const float* Q, const float* K, const float* V,
-    const float* attn_scores,
-    float* grad_Q, float* grad_K, float* grad_V,
-    int batch_size, int n_heads, int seq_len, int head_dim,
-    float scale
+    const float* Q,
+    const float* K,
+    const float* V,
+    const float* attn_weights,
+    const float* grad_output,
+    float* grad_Q,
+    float* grad_K,
+    float* grad_V,
+    float* grad_scores_buffer,
+    float* grad_attn_buffer,
+    int batch_heads,
+    int seq_len,
+    int head_dim,
+    const float* mask = nullptr
 );
 
 // ============================================================================
@@ -151,23 +165,25 @@ void dropout_backward(
 // Embeddings
 // ============================================================================
 
-// Embedding lookup: output[i, :] = weight[input[i], :]
+// Embedding lookup: output[i, :] = embeddings[token_ids[i], :]
 void embedding_forward(
-    const int* input, const float* weight,
+    const int* token_ids,
+    const float* embeddings,
     float* output,
-    int batch_size, int seq_len, int vocab_size, int embedding_dim
+    int batch_size,
+    int seq_len,
+    int vocab_size,
+    int embedding_dim
 );
 
 void embedding_backward(
-    const int* input, const float* grad_output,
-    float* grad_weight,
-    int batch_size, int seq_len, int vocab_size, int embedding_dim
-);
-
-// Sinusoidal position encoding
-void sinusoidal_position_encoding(
-    float* output,
-    int max_seq_len, int d_model
+    const float* grad_output,
+    const int* token_ids,
+    float* grad_embeddings,
+    int batch_size,
+    int seq_len,
+    int vocab_size,
+    int embedding_dim
 );
 
 // ============================================================================
@@ -194,17 +210,16 @@ void cross_entropy_backward(
 // ============================================================================
 
 // Element-wise operations
-void add_inplace(float* a, const float* b, int size);
-void mul_scalar(float* a, float scalar, int size);
-void add_scaled(float* out, const float* a, const float* b, float scale, int size);
-
-// Gradient clipping
-float compute_global_norm(const float** grads, const int* sizes, int num_tensors);
-void clip_grad_norm(float** grads, const int* sizes, int num_tensors, float max_norm);
+void elementwise_add(const float* A, const float* B, float* C, int size);
+void elementwise_multiply(const float* A, const float* B, float* C, int size);
+void scale(float* A, float scale_factor, int size);
+void add_bias(const float* input, const float* bias, float* output,
+              int batch_size, int hidden_dim);
+void residual_add(const float* input, const float* residual, float* output,
+                  float scale_factor, int size);
 
 // NaN/Inf checking
-bool has_nan(const float* data, int size);
-bool has_inf(const float* data, int size);
+int check_finite(const float* input, int size);  // Returns count of non-finite values
 
 // Reductions
 float reduce_sum(const float* data, int size);
@@ -212,9 +227,70 @@ float reduce_mean(const float* data, int size);
 float reduce_max(const float* data, int size);
 float reduce_norm(const float* data, int size);  // L2 norm
 
-// Random initialization
-void randn(float* data, int size, float mean, float std, unsigned long long seed);
-void uniform(float* data, int size, float a, float b, unsigned long long seed);
+// ============================================================================
+// Optimizer
+// ============================================================================
+
+// AdamW optimizer step
+void adamw_update(
+    float* params, const float* grads,
+    float* m, float* v,
+    float lr, float beta1, float beta2, float epsilon,
+    float weight_decay, int t, int size
+);
+
+// Gradient clipping
+void clip_grad_norm(float* grads, int size, float max_norm);
+
+// ============================================================================
+// Loss and Accuracy
+// ============================================================================
+
+// Language modeling cross-entropy loss
+float lm_cross_entropy_loss(
+    const float* logits, const int* targets,
+    int batch_size, int seq_len, int vocab_size,
+    const float* mask = nullptr
+);
+
+void lm_cross_entropy_gradient(
+    const float* logits, const int* targets,
+    float* grad, int batch_size, int seq_len, int vocab_size,
+    const float* mask = nullptr
+);
+
+float compute_accuracy(
+    const float* logits, const int* targets,
+    int batch_size, int seq_len, int vocab_size,
+    const float* mask = nullptr
+);
+
+// ============================================================================
+// Position Encodings and Masks
+// ============================================================================
+
+// Create sinusoidal position encodings
+void create_sinusoidal_position_encodings(
+    float* output, int max_seq_len, int d_model
+);
+
+// Create causal attention mask
+void create_causal_mask(float* mask, int seq_len);
+
+// ============================================================================
+// Attention Helpers
+// ============================================================================
+
+// Reshape for multi-head attention
+void reshape_for_attention(
+    const float* input, float* output,
+    int batch_size, int seq_len, int n_heads, int head_dim
+);
+
+void reshape_from_attention(
+    const float* input, float* output,
+    int batch_size, int seq_len, int n_heads, int head_dim
+);
 
 } // namespace kernels
 } // namespace tiny_transformer
