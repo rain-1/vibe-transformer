@@ -178,17 +178,94 @@ Tensor TinyTransformer::forward(
 }
 
 void TinyTransformer::backward(const Tensor& grad_output, const Tensor& input) {
-    // TODO: Implement full backward pass
-    // This is very complex and requires:
-    // 1. Backward through output projection
-    // 2. Backward through final norm
-    // 3. Backward through each transformer block (in reverse order)
-    // 4. Backward through embedding addition
-    // 5. Backward through position encoding (if learned)
-    // 6. Backward through token embedding
+    // Backward through the entire model
+    // grad_output: [batch_size, seq_len, vocab_size]
 
-    // For now, we'll use PyTorch for training and only implement forward pass in CUDA
-    // Full backward implementation would be needed for pure CUDA training
+    int batch_size = input.shape()[0];
+    int seq_len = input.shape()[1];
+    int flat_batch = batch_size * seq_len;
+
+    // 1. Backward through output projection
+    Tensor flat_grad_output(const_cast<float*>(grad_output.data()),
+                            std::vector<int>{flat_batch, vocab_size_}, false);
+    Tensor flat_final_normed(final_normed_->data(),
+                             std::vector<int>{flat_batch, d_model_}, false);
+
+    output_projection_->backward(flat_grad_output, flat_final_normed);
+
+    // Get gradient wrt final_normed
+    Tensor grad_final_normed(std::vector<int>{batch_size, seq_len, d_model_}, false);
+    CUDA_CHECK(cudaMemcpy(grad_final_normed.data(), final_normed_->grad(),
+                          batch_size * seq_len * d_model_ * sizeof(float),
+                          cudaMemcpyDeviceToDevice));
+
+    // 2. Backward through final norm
+    Tensor* last_block_output = block_outputs_.empty() ? combined_emb_.get() :
+                                                         block_outputs_.back().get();
+
+    if (auto* ln = dynamic_cast<LayerNorm*>(final_norm_.get())) {
+        ln->backward(grad_final_normed, *last_block_output);
+    } else if (auto* rn = dynamic_cast<RMSNorm*>(final_norm_.get())) {
+        rn->backward(grad_final_normed, *last_block_output);
+    }
+
+    // Get gradient wrt last block output
+    Tensor grad_block_out(std::vector<int>{batch_size, seq_len, d_model_}, false);
+    CUDA_CHECK(cudaMemcpy(grad_block_out.data(), last_block_output->grad(),
+                          batch_size * seq_len * d_model_ * sizeof(float),
+                          cudaMemcpyDeviceToDevice));
+
+    // 3. Backward through transformer blocks (in reverse order)
+    for (int i = static_cast<int>(blocks_.size()) - 1; i >= 0; i--) {
+        // Input to this block
+        Tensor* block_input = (i == 0) ? combined_emb_.get() : block_outputs_[i - 1].get();
+
+        // Backward through block
+        blocks_[i]->backward(grad_block_out, *block_input);
+
+        // Get gradient for next iteration (gradient wrt block input)
+        if (i > 0) {
+            CUDA_CHECK(cudaMemcpy(grad_block_out.data(), block_input->grad(),
+                                  batch_size * seq_len * d_model_ * sizeof(float),
+                                  cudaMemcpyDeviceToDevice));
+        }
+    }
+
+    // grad_block_out now contains gradient wrt combined_emb
+    // combined_emb = token_emb + pos_emb
+
+    // 4. Backward through embedding addition
+    // grad_token_emb = grad_combined_emb (pass through)
+    // grad_pos_emb = grad_combined_emb (pass through)
+    Tensor grad_token_emb(std::vector<int>{batch_size, seq_len, d_model_}, false);
+    Tensor grad_pos_emb(std::vector<int>{batch_size, seq_len, d_model_}, false);
+
+    CUDA_CHECK(cudaMemcpy(grad_token_emb.data(), grad_block_out.data(),
+                          batch_size * seq_len * d_model_ * sizeof(float),
+                          cudaMemcpyDeviceToDevice));
+    CUDA_CHECK(cudaMemcpy(grad_pos_emb.data(), grad_block_out.data(),
+                          batch_size * seq_len * d_model_ * sizeof(float),
+                          cudaMemcpyDeviceToDevice));
+
+    // 5. Backward through position encoding (if learned)
+    if (!use_sinusoidal_pos_) {
+        // Create position indices again
+        std::vector<float> pos_indices_host(batch_size * seq_len);
+        for (int b = 0; b < batch_size; b++) {
+            for (int s = 0; s < seq_len; s++) {
+                pos_indices_host[b * seq_len + s] = static_cast<float>(s);
+            }
+        }
+
+        Tensor pos_indices(std::vector<int>{batch_size, seq_len}, false);
+        pos_indices.copy_from_host(pos_indices_host.data());
+
+        learned_pos_embedding_->backward(grad_pos_emb, pos_indices);
+    }
+    // Note: Sinusoidal positions have no learnable parameters, so no backward needed
+
+    // 6. Backward through token embedding
+    token_embedding_->backward(grad_token_emb, input);
 }
 
 std::vector<Tensor*> TinyTransformer::parameters() {

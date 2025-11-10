@@ -388,20 +388,20 @@ void MultiHeadAttention::forward(
 
     // Reshape for multi-head attention: [batch_size, seq_len, d_model] -> [batch_size * n_heads, seq_len, d_k]
     int batch_heads = batch_size * n_heads_;
-    Tensor Q_reshaped(std::vector<int>{batch_heads, seq_len, d_k_}, false);
-    Tensor K_reshaped(std::vector<int>{batch_heads, seq_len, d_k_}, false);
-    Tensor V_reshaped(std::vector<int>{batch_heads, seq_len, d_k_}, false);
+    Q_reshaped_ = std::make_unique<Tensor>(std::vector<int>{batch_heads, seq_len, d_k_}, false);
+    K_reshaped_ = std::make_unique<Tensor>(std::vector<int>{batch_heads, seq_len, d_k_}, false);
+    V_reshaped_ = std::make_unique<Tensor>(std::vector<int>{batch_heads, seq_len, d_k_}, false);
 
     kernels::reshape_for_attention(
-        Q_->data(), Q_reshaped.data(),
+        Q_->data(), Q_reshaped_->data(),
         batch_size, seq_len, n_heads_, d_k_
     );
     kernels::reshape_for_attention(
-        K_->data(), K_reshaped.data(),
+        K_->data(), K_reshaped_->data(),
         batch_size, seq_len, n_heads_, d_k_
     );
     kernels::reshape_for_attention(
-        V_->data(), V_reshaped.data(),
+        V_->data(), V_reshaped_->data(),
         batch_size, seq_len, n_heads_, d_k_
     );
 
@@ -418,9 +418,9 @@ void MultiHeadAttention::forward(
 
     // Run scaled dot-product attention
     kernels::attention_forward(
-        Q_reshaped.data(),
-        K_reshaped.data(),
-        V_reshaped.data(),
+        Q_reshaped_->data(),
+        K_reshaped_->data(),
+        V_reshaped_->data(),
         context_->data(),
         attn_scores_->data(),
         attn_weights_->data(),
@@ -431,29 +431,116 @@ void MultiHeadAttention::forward(
     );
 
     // Reshape back: [batch_heads, seq_len, d_k] -> [batch_size, seq_len, d_model]
-    Tensor context_concat(std::vector<int>{flat_batch, d_model_}, false);
+    context_concat_ = std::make_unique<Tensor>(std::vector<int>{flat_batch, d_model_}, false);
     kernels::reshape_from_attention(
         context_->data(),
-        context_concat.data(),
+        context_concat_->data(),
         batch_size, seq_len, n_heads_, d_k_
     );
 
     // Final projection
-    W_o_->forward(context_concat, output, training);
+    W_o_->forward(*context_concat_, output, training);
 }
 
 void MultiHeadAttention::backward(const Tensor& grad_output, const Tensor& input) {
-    // This is complex - we need to backprop through all the attention operations
-    // For now, implement a simplified version
-    // Full implementation would require saving all intermediate gradients
+    // Backward through: W_o -> reshape_from -> attention -> reshape_for -> W_q/W_k/W_v
 
-    // TODO: Implement complete backward pass through attention
-    // This requires:
-    // 1. Backward through W_o
-    // 2. Backward through reshape
+    int batch_size = input.shape()[0];
+    int seq_len = input.shape()[1];
+    int flat_batch = batch_size * seq_len;
+    int batch_heads = batch_size * n_heads_;
+
+    Tensor flat_input(const_cast<float*>(input.data()),
+                      std::vector<int>{flat_batch, d_model_}, false);
+
+    // 1. Backward through W_o (output projection)
+    W_o_->backward(grad_output, *context_concat_);
+
+    // Get gradient wrt context_concat from W_o backward
+    Tensor grad_context_concat(std::vector<int>{flat_batch, d_model_}, false);
+    CUDA_CHECK(cudaMemcpy(grad_context_concat.data(), context_concat_->grad(),
+                          flat_batch * d_model_ * sizeof(float),
+                          cudaMemcpyDeviceToDevice));
+
+    // 2. Backward through reshape_from_attention
+    // This is just the reverse reshape: reshape_for_attention
+    Tensor grad_context(std::vector<int>{batch_heads, seq_len, d_k_}, false);
+    kernels::reshape_for_attention(
+        grad_context_concat.data(),
+        grad_context.data(),
+        batch_size, seq_len, n_heads_, d_k_
+    );
+
     // 3. Backward through attention_forward
-    // 4. Backward through reshape again
+    Tensor grad_Q_reshaped(std::vector<int>{batch_heads, seq_len, d_k_}, false);
+    Tensor grad_K_reshaped(std::vector<int>{batch_heads, seq_len, d_k_}, false);
+    Tensor grad_V_reshaped(std::vector<int>{batch_heads, seq_len, d_k_}, false);
+    Tensor grad_scores_buffer(std::vector<int>{batch_heads, seq_len, seq_len}, false);
+    Tensor grad_attn_buffer(std::vector<int>{batch_heads, seq_len, seq_len}, false);
+
+    kernels::attention_backward(
+        Q_reshaped_->data(),
+        K_reshaped_->data(),
+        V_reshaped_->data(),
+        attn_weights_->data(),
+        grad_context.data(),
+        grad_Q_reshaped.data(),
+        grad_K_reshaped.data(),
+        grad_V_reshaped.data(),
+        grad_scores_buffer.data(),
+        grad_attn_buffer.data(),
+        batch_heads,
+        seq_len,
+        d_k_,
+        nullptr  // mask gradient not needed
+    );
+
+    // 4. Backward through reshape_for_attention
+    // This is the reverse reshape: reshape_from_attention
+    Tensor grad_Q(std::vector<int>{flat_batch, d_model_}, false);
+    Tensor grad_K(std::vector<int>{flat_batch, d_model_}, false);
+    Tensor grad_V(std::vector<int>{flat_batch, d_model_}, false);
+
+    kernels::reshape_from_attention(
+        grad_Q_reshaped.data(),
+        grad_Q.data(),
+        batch_size, seq_len, n_heads_, d_k_
+    );
+    kernels::reshape_from_attention(
+        grad_K_reshaped.data(),
+        grad_K.data(),
+        batch_size, seq_len, n_heads_, d_k_
+    );
+    kernels::reshape_from_attention(
+        grad_V_reshaped.data(),
+        grad_V.data(),
+        batch_size, seq_len, n_heads_, d_k_
+    );
+
     // 5. Backward through W_q, W_k, W_v
+    W_q_->backward(grad_Q, flat_input);
+    W_k_->backward(grad_K, flat_input);
+    W_v_->backward(grad_V, flat_input);
+
+    // Accumulate gradients from all three branches (Q, K, V) to input
+    if (input.requires_grad() && input.grad() != nullptr) {
+        // Sum up gradients: grad_input = grad_Q_input + grad_K_input + grad_V_input
+        Tensor grad_input(const_cast<float*>(input.grad()),
+                          std::vector<int>{flat_batch, d_model_}, false);
+
+        // Start with grad from Q path
+        CUDA_CHECK(cudaMemcpy(grad_input.data(), Q_->grad(),
+                              flat_batch * d_model_ * sizeof(float),
+                              cudaMemcpyDeviceToDevice));
+
+        // Add grad from K path
+        kernels::elementwise_add(grad_input.data(), K_->grad(), grad_input.data(),
+                                 flat_batch * d_model_);
+
+        // Add grad from V path
+        kernels::elementwise_add(grad_input.data(), V_->grad(), grad_input.data(),
+                                 flat_batch * d_model_);
+    }
 }
 
 std::vector<Tensor*> MultiHeadAttention::parameters() {
@@ -492,14 +579,15 @@ void FeedForward::forward(const Tensor& input, Tensor& output, bool training) {
     Tensor flat_input(const_cast<float*>(input.data()),
                       std::vector<int>{flat_batch, d_model_}, false);
 
-    // Allocate hidden layer
+    // Allocate hidden layers
+    hidden_pre_act_ = std::make_unique<Tensor>(std::vector<int>{flat_batch, d_ff_}, false);
     hidden_ = std::make_unique<Tensor>(std::vector<int>{flat_batch, d_ff_}, false);
 
-    // First linear + activation
-    linear1_->forward(flat_input, *hidden_, training);
+    // First linear
+    linear1_->forward(flat_input, *hidden_pre_act_, training);
 
-    // Apply GELU activation in-place
-    kernels::gelu_forward(hidden_->data(), hidden_->data(), flat_batch * d_ff_);
+    // Apply GELU activation (save pre-activation for backward)
+    kernels::gelu_forward(hidden_pre_act_->data(), hidden_->data(), flat_batch * d_ff_);
 
     // Second linear
     Tensor flat_output(output.data(), std::vector<int>{flat_batch, d_model_}, false);
@@ -507,11 +595,49 @@ void FeedForward::forward(const Tensor& input, Tensor& output, bool training) {
 }
 
 void FeedForward::backward(const Tensor& grad_output, const Tensor& input) {
-    // TODO: Implement backward pass
-    // This requires:
+    // grad_output: [batch_size, seq_len, d_model]
+    // Backward through: linear2 -> GELU -> linear1
+
+    int batch_size = input.shape()[0];
+    int seq_len = input.shape()[1];
+    int flat_batch = batch_size * seq_len;
+
+    // Flatten tensors
+    Tensor flat_grad_output(const_cast<float*>(grad_output.data()),
+                            std::vector<int>{flat_batch, d_model_}, false);
+    Tensor flat_input(const_cast<float*>(input.data()),
+                      std::vector<int>{flat_batch, d_model_}, false);
+
+    // Allocate gradient for hidden layer (post-GELU)
+    Tensor grad_hidden(std::vector<int>{flat_batch, d_ff_}, false);
+
     // 1. Backward through linear2_
+    linear2_->backward(flat_grad_output, *hidden_);
+
+    // Get grad_hidden from input gradient of linear2 (stored in hidden_->grad())
+    CUDA_CHECK(cudaMemcpy(grad_hidden.data(), hidden_->grad(),
+                          flat_batch * d_ff_ * sizeof(float),
+                          cudaMemcpyDeviceToDevice));
+
     // 2. Backward through GELU
+    Tensor grad_hidden_pre_act(std::vector<int>{flat_batch, d_ff_}, false);
+    kernels::gelu_backward(
+        grad_hidden.data(),
+        hidden_pre_act_->data(),
+        grad_hidden_pre_act.data(),
+        flat_batch * d_ff_
+    );
+
     // 3. Backward through linear1_
+    linear1_->backward(grad_hidden_pre_act, flat_input);
+
+    // Copy grad_input to input.grad() if needed
+    if (input.requires_grad() && input.grad() != nullptr) {
+        CUDA_CHECK(cudaMemcpy(const_cast<float*>(input.grad()),
+                              flat_input.grad(),
+                              flat_batch * d_model_ * sizeof(float),
+                              cudaMemcpyDeviceToDevice));
+    }
 }
 
 std::vector<Tensor*> FeedForward::parameters() {
@@ -565,6 +691,8 @@ void TransformerBlock::forward(
     int d_model = input.shape()[2];
 
     // Allocate intermediate tensors
+    normed1_ = std::make_unique<Tensor>(input.shape(), false);
+    normed2_ = std::make_unique<Tensor>(input.shape(), false);
     attn_out_ = std::make_unique<Tensor>(input.shape(), false);
     ffn_out_ = std::make_unique<Tensor>(input.shape(), false);
     residual1_ = std::make_unique<Tensor>(input.shape(), false);
@@ -572,15 +700,14 @@ void TransformerBlock::forward(
 
     // First residual: attention
     // norm1(input)
-    Tensor normed1(input.shape(), false);
     if (auto* ln = dynamic_cast<LayerNorm*>(norm1_.get())) {
-        ln->forward(input, normed1, training);
+        ln->forward(input, *normed1_, training);
     } else if (auto* rn = dynamic_cast<RMSNorm*>(norm1_.get())) {
-        rn->forward(input, normed1, training);
+        rn->forward(input, *normed1_, training);
     }
 
     // attn(normed1)
-    attn_->forward(normed1, *attn_out_, mask, return_attn_weights, training);
+    attn_->forward(*normed1_, *attn_out_, mask, return_attn_weights, training);
 
     // residual1 = input + attn_out
     CUDA_CHECK(cudaMemcpy(residual1_->data(), input.data(),
@@ -591,15 +718,14 @@ void TransformerBlock::forward(
 
     // Second residual: FFN
     // norm2(residual1)
-    Tensor normed2(input.shape(), false);
     if (auto* ln = dynamic_cast<LayerNorm*>(norm2_.get())) {
-        ln->forward(*residual1_, normed2, training);
+        ln->forward(*residual1_, *normed2_, training);
     } else if (auto* rn = dynamic_cast<RMSNorm*>(norm2_.get())) {
-        rn->forward(*residual1_, normed2, training);
+        rn->forward(*residual1_, *normed2_, training);
     }
 
     // ffn(normed2)
-    ffn_->forward(normed2, *ffn_out_, training);
+    ffn_->forward(*normed2_, *ffn_out_, training);
 
     // output = residual1 + ffn_out
     CUDA_CHECK(cudaMemcpy(output.data(), residual1_->data(),
@@ -610,8 +736,80 @@ void TransformerBlock::forward(
 }
 
 void TransformerBlock::backward(const Tensor& grad_output, const Tensor& input) {
-    // TODO: Implement backward pass
-    // This is the most complex backward pass, requiring careful gradient flow
+    // Backward through pre-norm transformer with residual connections
+    // Forward was:
+    //   normed1 = norm1(input)
+    //   attn_out = attn(normed1)
+    //   residual1 = input + residual_scale * attn_out
+    //   normed2 = norm2(residual1)
+    //   ffn_out = ffn(normed2)
+    //   output = residual1 + residual_scale * ffn_out
+
+    int numel = input.numel();
+
+    // Allocate gradient tensors
+    Tensor grad_residual1(input.shape(), false);
+    Tensor grad_ffn_out(input.shape(), false);
+    Tensor grad_normed2(input.shape(), false);
+    Tensor grad_attn_out(input.shape(), false);
+    Tensor grad_normed1(input.shape(), false);
+    Tensor grad_input(input.shape(), false);
+
+    // 1. Backward through second residual: output = residual1 + residual_scale * ffn_out
+    // grad_residual1 = grad_output (pass through from addition)
+    // grad_ffn_out = residual_scale * grad_output
+    CUDA_CHECK(cudaMemcpy(grad_residual1.data(), grad_output.data(),
+                          numel * sizeof(float), cudaMemcpyDeviceToDevice));
+    kernels::scale(grad_output.data(), grad_ffn_out.data(), residual_scale_, numel);
+
+    // 2. Backward through FFN
+    ffn_->backward(grad_ffn_out, *normed2_);
+
+    // 3. Backward through norm2
+    // Get gradient from FFN output (stored in normed2_->grad())
+    CUDA_CHECK(cudaMemcpy(grad_normed2.data(), normed2_->grad(),
+                          numel * sizeof(float), cudaMemcpyDeviceToDevice));
+
+    if (auto* ln = dynamic_cast<LayerNorm*>(norm2_.get())) {
+        ln->backward(grad_normed2, *residual1_);
+    } else if (auto* rn = dynamic_cast<RMSNorm*>(norm2_.get())) {
+        rn->backward(grad_normed2, *residual1_);
+    }
+
+    // 4. Accumulate gradient to residual1 from norm2 backward
+    kernels::elementwise_add(grad_residual1.data(), residual1_->grad(),
+                             grad_residual1.data(), numel);
+
+    // 5. Backward through first residual: residual1 = input + residual_scale * attn_out
+    // grad_input = grad_residual1 (pass through from addition)
+    // grad_attn_out = residual_scale * grad_residual1
+    CUDA_CHECK(cudaMemcpy(grad_input.data(), grad_residual1.data(),
+                          numel * sizeof(float), cudaMemcpyDeviceToDevice));
+    kernels::scale(grad_residual1.data(), grad_attn_out.data(), residual_scale_, numel);
+
+    // 6. Backward through attention
+    attn_->backward(grad_attn_out, *normed1_);
+
+    // 7. Backward through norm1
+    // Get gradient from attention output (stored in normed1_->grad())
+    CUDA_CHECK(cudaMemcpy(grad_normed1.data(), normed1_->grad(),
+                          numel * sizeof(float), cudaMemcpyDeviceToDevice));
+
+    if (auto* ln = dynamic_cast<LayerNorm*>(norm1_.get())) {
+        ln->backward(grad_normed1, input);
+    } else if (auto* rn = dynamic_cast<RMSNorm*>(norm1_.get())) {
+        rn->backward(grad_normed1, input);
+    }
+
+    // 8. Accumulate gradient to input from norm1 backward
+    kernels::elementwise_add(grad_input.data(), input.grad(),
+                             grad_input.data(), numel);
+
+    // 9. Copy final gradient to input
+    if (input.requires_grad() && input.grad() != nullptr) {
+        CUDA_CHECK(cudaMemcpy(const_cast<float*>(input.grad()), grad_input.data(),
+                              numel * sizeof(float), cudaMemcpyDeviceToDevice));
+    }
 }
 
 std::vector<Tensor*> TransformerBlock::parameters() {

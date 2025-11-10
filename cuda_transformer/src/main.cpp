@@ -184,14 +184,21 @@ int main(int argc, char** argv) {
     );
     std::cout << "\n";
 
-    // Run inference demo (forward pass only)
-    std::cout << "========================================\n";
-    std::cout << "Running Inference Demo (Forward Pass)\n";
-    std::cout << "========================================\n\n";
-    std::cout << "NOTE: Full training requires backward pass implementation.\n";
-    std::cout << "This demo shows the model can process data and produce outputs.\n\n";
+    // Create optimizer
+    std::cout << "Creating optimizer...\n";
+    auto model_params = model.parameters();
+    AdamW::Config optim_config;
+    optim_config.lr = config.learning_rate;
+    optim_config.weight_decay = config.weight_decay;
+    AdamW optimizer(model_params, optim_config);
+    std::cout << "\n";
 
-    for (int epoch = 0; epoch < std::min(config.num_epochs, 3); epoch++) {
+    // Run full training with backward pass
+    std::cout << "========================================\n";
+    std::cout << "Starting Full Training\n";
+    std::cout << "========================================\n\n";
+
+    for (int epoch = 0; epoch < config.num_epochs; epoch++) {
         std::cout << "Epoch " << epoch + 1 << "/" << config.num_epochs << "\n";
         std::cout << "--------------------\n";
 
@@ -201,15 +208,17 @@ int main(int argc, char** argv) {
         int total_correct = 0;
         int total_tokens = 0;
 
-        while (batch_count < std::min(config.train_batches, 5)) {
+        while (batch_count < config.train_batches) {
             auto [inputs, targets] = train_loader.next_batch();
             if (!inputs) break;
+
+            // Zero gradients
+            optimizer.zero_grad();
 
             // Forward pass
             Tensor logits = model.forward(*inputs, nullptr, true);
 
             // Compute loss and accuracy
-            // Reinterpret logits and targets for loss computation
             const int* targets_int = reinterpret_cast<const int*>(targets->data());
 
             float loss = kernels::lm_cross_entropy_loss(
@@ -230,11 +239,30 @@ int main(int argc, char** argv) {
                 nullptr  // no mask
             );
 
+            // Backward pass
+            // Compute gradient of loss wrt logits
+            Tensor grad_logits(logits.shape(), false);
+            kernels::lm_cross_entropy_gradient(
+                logits.data(),
+                targets_int,
+                grad_logits.data(),
+                config.batch_size,
+                config.max_seq_len,
+                config.vocab_size,
+                nullptr  // no mask
+            );
+
+            // Backpropagate through model
+            model.backward(grad_logits, *inputs);
+
+            // Update parameters
+            optimizer.step();
+
             total_loss += loss;
             total_correct += static_cast<int>(acc * config.batch_size * config.max_seq_len);
             total_tokens += config.batch_size * config.max_seq_len;
 
-            if (batch_count % 2 == 0) {
+            if (batch_count % 10 == 0) {
                 std::cout << "  Batch " << batch_count + 1
                           << ": Loss=" << loss
                           << ", Acc=" << (acc * 100.0f) << "%\n";
@@ -253,15 +281,10 @@ int main(int argc, char** argv) {
     }
 
     std::cout << "========================================\n";
-    std::cout << "Inference demo complete!\n\n";
+    std::cout << "Training complete!\n\n";
 
-    std::cout << "Next Steps:\n";
-    std::cout << "  1. Implement backward passes in layers to enable full training\n";
-    std::cout << "  2. Add optimizer integration for parameter updates\n";
-    std::cout << "  3. Or use PyTorch autograd for gradients\n";
-    std::cout << "\n";
-    std::cout << "The forward pass is working correctly!\n";
-    std::cout << "Model can process sequences and produce logits.\n";
+    std::cout << "The model has been trained with full backward pass.\n";
+    std::cout << "All gradients computed via CUDA kernels.\n";
 
     return 0;
 }

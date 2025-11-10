@@ -160,10 +160,12 @@ private:
     std::unique_ptr<Linear> W_o_;
 
     // Intermediate tensors (saved for backward)
-    std::unique_ptr<Tensor> Q_, K_, V_;
+    std::unique_ptr<Tensor> Q_, K_, V_;  // Flat projections
+    std::unique_ptr<Tensor> Q_reshaped_, K_reshaped_, V_reshaped_;  // Reshaped for multi-head
     std::unique_ptr<Tensor> attn_scores_;
     std::unique_ptr<Tensor> attn_weights_;
     std::unique_ptr<Tensor> context_;
+    std::unique_ptr<Tensor> context_concat_;  // Concatenated context before output projection
 
     int d_model_;
     int n_heads_;
@@ -189,7 +191,8 @@ public:
 private:
     std::unique_ptr<Linear> linear1_;
     std::unique_ptr<Linear> linear2_;
-    std::unique_ptr<Tensor> hidden_;  // Saved for backward
+    std::unique_ptr<Tensor> hidden_;  // Saved for backward (post-activation)
+    std::unique_ptr<Tensor> hidden_pre_act_;  // Saved for backward (pre-activation)
     float dropout_;
     int d_model_;
     int d_ff_;
@@ -225,7 +228,9 @@ private:
     std::unique_ptr<MultiHeadAttention> attn_;
     std::unique_ptr<FeedForward> ffn_;
 
-    // Intermediate tensors
+    // Intermediate tensors (saved for backward)
+    std::unique_ptr<Tensor> normed1_;  // Output of norm1
+    std::unique_ptr<Tensor> normed2_;  // Output of norm2
     std::unique_ptr<Tensor> attn_out_;
     std::unique_ptr<Tensor> ffn_out_;
     std::unique_ptr<Tensor> residual1_;
