@@ -193,10 +193,16 @@ void TinyTransformer::backward(const Tensor& grad_output, const Tensor& input) {
                             std::vector<int>{flat_batch, vocab_size_}, false);
     Tensor flat_final_normed(final_normed_->data(),
                              std::vector<int>{flat_batch, d_model_}, false);
-    // Set gradient pointer for the wrapper
-    flat_final_normed.set_grad(final_normed_->grad());
+
+    // Allocate gradient for the wrapper tensor
+    flat_final_normed.alloc_grad();
 
     output_projection_->backward(flat_grad_output, flat_final_normed);
+
+    // Copy gradient from wrapper back to original tensor
+    CUDA_CHECK(cudaMemcpy(final_normed_->grad(), flat_final_normed.grad(),
+                          flat_batch * d_model_ * sizeof(float),
+                          cudaMemcpyDeviceToDevice));
 
     // Get gradient wrt final_normed
     Tensor grad_final_normed(std::vector<int>{batch_size, seq_len, d_model_}, false);
