@@ -760,7 +760,9 @@ void TransformerBlock::backward(const Tensor& grad_output, const Tensor& input) 
     // grad_ffn_out = residual_scale * grad_output
     CUDA_CHECK(cudaMemcpy(grad_residual1.data(), grad_output.data(),
                           numel * sizeof(float), cudaMemcpyDeviceToDevice));
-    kernels::scale(grad_output.data(), grad_ffn_out.data(), residual_scale_, numel);
+    CUDA_CHECK(cudaMemcpy(grad_ffn_out.data(), grad_output.data(),
+                          numel * sizeof(float), cudaMemcpyDeviceToDevice));
+    kernels::scale(grad_ffn_out.data(), residual_scale_, numel);
 
     // 2. Backward through FFN
     ffn_->backward(grad_ffn_out, *normed2_);
@@ -785,7 +787,9 @@ void TransformerBlock::backward(const Tensor& grad_output, const Tensor& input) 
     // grad_attn_out = residual_scale * grad_residual1
     CUDA_CHECK(cudaMemcpy(grad_input.data(), grad_residual1.data(),
                           numel * sizeof(float), cudaMemcpyDeviceToDevice));
-    kernels::scale(grad_residual1.data(), grad_attn_out.data(), residual_scale_, numel);
+    CUDA_CHECK(cudaMemcpy(grad_attn_out.data(), grad_residual1.data(),
+                          numel * sizeof(float), cudaMemcpyDeviceToDevice));
+    kernels::scale(grad_attn_out.data(), residual_scale_, numel);
 
     // 6. Backward through attention
     attn_->backward(grad_attn_out, *normed1_);
