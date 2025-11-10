@@ -33,7 +33,12 @@ public:
         float weight_decay = 0.01f;
     };
 
-    AdamW(const std::vector<Tensor*>& parameters, const Config& config = {});
+    // Constructor with custom config
+    AdamW(const std::vector<Tensor*>& parameters, const Config& config);
+
+    // Constructor with default config
+    explicit AdamW(const std::vector<Tensor*>& parameters)
+        : AdamW(parameters, Config{}) {}
 
     void step() override;
     void zero_grad() override;
