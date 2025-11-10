@@ -29,7 +29,12 @@ public:
         bool check_nan_inf = true;
     };
 
-    MetricsTracker(const Config& config = Config());
+    // Constructor with custom config
+    explicit MetricsTracker(const Config& config);
+
+    // Constructor with default config
+    MetricsTracker() : MetricsTracker(Config{}) {}
+
     ~MetricsTracker();
 
     // Logging
