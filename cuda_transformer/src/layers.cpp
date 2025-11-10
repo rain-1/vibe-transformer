@@ -453,6 +453,12 @@ void MultiHeadAttention::backward(const Tensor& grad_output, const Tensor& input
     Tensor flat_input(const_cast<float*>(input.data()),
                       std::vector<int>{flat_batch, d_model_}, false);
 
+    // Allocate gradients for intermediate tensors
+    context_concat_->alloc_grad();
+    Q_->alloc_grad();
+    K_->alloc_grad();
+    V_->alloc_grad();
+
     // 1. Backward through W_o (output projection)
     W_o_->backward(grad_output, *context_concat_);
 
@@ -610,6 +616,7 @@ void FeedForward::backward(const Tensor& grad_output, const Tensor& input) {
 
     // Allocate gradient for hidden layer (post-GELU)
     Tensor grad_hidden(std::vector<int>{flat_batch, d_ff_}, false);
+    hidden_->alloc_grad();
 
     // 1. Backward through linear2_
     linear2_->backward(flat_grad_output, *hidden_);
@@ -746,6 +753,11 @@ void TransformerBlock::backward(const Tensor& grad_output, const Tensor& input) 
     //   output = residual1 + residual_scale * ffn_out
 
     int numel = input.numel();
+
+    // Allocate gradients for intermediate tensors
+    normed1_->alloc_grad();
+    normed2_->alloc_grad();
+    residual1_->alloc_grad();
 
     // Allocate gradient tensors
     Tensor grad_residual1(input.shape(), false);

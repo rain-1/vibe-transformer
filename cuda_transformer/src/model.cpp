@@ -186,10 +186,15 @@ void TinyTransformer::backward(const Tensor& grad_output, const Tensor& input) {
     int flat_batch = batch_size * seq_len;
 
     // 1. Backward through output projection
+    // Allocate gradient for final_normed
+    final_normed_->alloc_grad();
+
     Tensor flat_grad_output(const_cast<float*>(grad_output.data()),
                             std::vector<int>{flat_batch, vocab_size_}, false);
     Tensor flat_final_normed(final_normed_->data(),
                              std::vector<int>{flat_batch, d_model_}, false);
+    // Set gradient pointer for the wrapper
+    flat_final_normed.set_grad(final_normed_->grad());
 
     output_projection_->backward(flat_grad_output, flat_final_normed);
 
@@ -202,6 +207,9 @@ void TinyTransformer::backward(const Tensor& grad_output, const Tensor& input) {
     // 2. Backward through final norm
     Tensor* last_block_output = block_outputs_.empty() ? combined_emb_.get() :
                                                          block_outputs_.back().get();
+
+    // Allocate gradient for last block output
+    last_block_output->alloc_grad();
 
     if (auto* ln = dynamic_cast<LayerNorm*>(final_norm_.get())) {
         ln->backward(grad_final_normed, *last_block_output);
@@ -216,6 +224,12 @@ void TinyTransformer::backward(const Tensor& grad_output, const Tensor& input) {
                           cudaMemcpyDeviceToDevice));
 
     // 3. Backward through transformer blocks (in reverse order)
+    // Allocate gradients for all block outputs and combined_emb
+    combined_emb_->alloc_grad();
+    for (auto& block_out : block_outputs_) {
+        block_out->alloc_grad();
+    }
+
     for (int i = static_cast<int>(blocks_.size()) - 1; i >= 0; i--) {
         // Input to this block
         Tensor* block_input = (i == 0) ? combined_emb_.get() : block_outputs_[i - 1].get();
@@ -226,6 +240,11 @@ void TinyTransformer::backward(const Tensor& grad_output, const Tensor& input) {
         // Get gradient for next iteration (gradient wrt block input)
         if (i > 0) {
             CUDA_CHECK(cudaMemcpy(grad_block_out.data(), block_input->grad(),
+                                  batch_size * seq_len * d_model_ * sizeof(float),
+                                  cudaMemcpyDeviceToDevice));
+        } else {
+            // Last iteration - copy gradient for combined_emb
+            CUDA_CHECK(cudaMemcpy(grad_block_out.data(), combined_emb_->grad(),
                                   batch_size * seq_len * d_model_ * sizeof(float),
                                   cudaMemcpyDeviceToDevice));
         }
