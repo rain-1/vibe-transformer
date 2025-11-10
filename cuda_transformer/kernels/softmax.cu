@@ -16,7 +16,7 @@ namespace kernels {
 
 // Warp-level reduction for max
 __device__ float warp_reduce_max(float val) {
-    for (int offset = warpSize/2; offset > 0; offset /= 2) {
+    for (int offset = 16; offset > 0; offset /= 2) {
         val = fmaxf(val, __shfl_down_sync(0xffffffff, val, offset));
     }
     return val;
@@ -24,7 +24,7 @@ __device__ float warp_reduce_max(float val) {
 
 // Warp-level reduction for sum
 __device__ float warp_reduce_sum(float val) {
-    for (int offset = warpSize/2; offset > 0; offset /= 2) {
+    for (int offset = 16; offset > 0; offset /= 2) {
         val += __shfl_down_sync(0xffffffff, val, offset);
     }
     return val;
@@ -54,13 +54,13 @@ __global__ void softmax_forward_kernel(
 
     // Reduce max across block
     thread_max = warp_reduce_max(thread_max);
-    if (tid % warpSize == 0) {
-        shared[tid / warpSize] = thread_max;
+    if (tid % 32 == 0) {
+        shared[tid / 32] = thread_max;
     }
     __syncthreads();
 
-    if (tid < warpSize) {
-        float val = (tid < (blockDim.x + warpSize - 1) / warpSize) ?
+    if (tid < 32) {
+        float val = (tid < (blockDim.x + 31) / 32) ?
                     shared[tid] : -INFINITY;
         val = warp_reduce_max(val);
         if (tid == 0) {
@@ -80,13 +80,13 @@ __global__ void softmax_forward_kernel(
 
     // Reduce sum across block
     thread_sum = warp_reduce_sum(thread_sum);
-    if (tid % warpSize == 0) {
-        shared[tid / warpSize] = thread_sum;
+    if (tid % 32 == 0) {
+        shared[tid / 32] = thread_sum;
     }
     __syncthreads();
 
-    if (tid < warpSize) {
-        float val = (tid < (blockDim.x + warpSize - 1) / warpSize) ?
+    if (tid < 32) {
+        float val = (tid < (blockDim.x + 31) / 32) ?
                     shared[tid] : 0.0f;
         val = warp_reduce_sum(val);
         if (tid == 0) {
@@ -161,13 +161,13 @@ __global__ void softmax_backward_kernel(
 
     // Reduce sum across block
     thread_sum = warp_reduce_sum(thread_sum);
-    if (tid % warpSize == 0) {
-        shared[tid / warpSize] = thread_sum;
+    if (tid % 32 == 0) {
+        shared[tid / 32] = thread_sum;
     }
     __syncthreads();
 
-    if (tid < warpSize) {
-        float val = (tid < (blockDim.x + warpSize - 1) / warpSize) ?
+    if (tid < 32) {
+        float val = (tid < (blockDim.x + 31) / 32) ?
                     shared[tid] : 0.0f;
         val = warp_reduce_sum(val);
         if (tid == 0) {

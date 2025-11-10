@@ -13,7 +13,7 @@ namespace kernels {
 
 // Warp-level reduction for sum
 __device__ inline float warp_reduce_sum_rms(float val) {
-    for (int offset = warpSize/2; offset > 0; offset /= 2) {
+    for (int offset = 16; offset > 0; offset /= 2) {
         val += __shfl_down_sync(0xffffffff, val, offset);
     }
     return val;
@@ -58,13 +58,13 @@ __global__ void rmsnorm_forward_kernel(
 
     // Reduce sum of squares across block
     thread_sum_sq = warp_reduce_sum_rms(thread_sum_sq);
-    if (tid % warpSize == 0) {
-        sdata[tid / warpSize] = thread_sum_sq;
+    if (tid % 32 == 0) {
+        sdata[tid / 32] = thread_sum_sq;
     }
     __syncthreads();
 
-    if (tid < warpSize) {
-        float val = (tid < (blockDim.x + warpSize - 1) / warpSize) ?
+    if (tid < 32) {
+        float val = (tid < (blockDim.x + 31) / 32) ?
                     sdata[tid] : 0.0f;
         val = warp_reduce_sum_rms(val);
         if (tid == 0) {
@@ -144,13 +144,13 @@ __global__ void rmsnorm_backward_kernel(
 
     // Reduce sum
     thread_sum = warp_reduce_sum_rms(thread_sum);
-    if (tid % warpSize == 0) {
-        sdata[tid / warpSize] = thread_sum;
+    if (tid % 32 == 0) {
+        sdata[tid / 32] = thread_sum;
     }
     __syncthreads();
 
-    if (tid < warpSize) {
-        float val = (tid < (blockDim.x + warpSize - 1) / warpSize) ?
+    if (tid < 32) {
+        float val = (tid < (blockDim.x + 31) / 32) ?
                     sdata[tid] : 0.0f;
         val = warp_reduce_sum_rms(val);
         if (tid == 0) {
@@ -182,7 +182,7 @@ void rmsnorm_forward(
 ) {
     int blockSize = 256;
     int gridSize = batch_size;
-    size_t sharedMemSize = (blockSize / warpSize + 1) * sizeof(float);
+    size_t sharedMemSize = (blockSize / 32 + 1) * sizeof(float);
 
     rmsnorm_forward_kernel<<<gridSize, blockSize, sharedMemSize>>>(
         input, gamma, output, rstd,
@@ -203,7 +203,7 @@ void rmsnorm_backward(
 ) {
     int blockSize = 256;
     int gridSize = batch_size;
-    size_t sharedMemSize = (blockSize / warpSize + 1) * sizeof(float);
+    size_t sharedMemSize = (blockSize / 32 + 1) * sizeof(float);
 
     // Zero out gamma gradient
     if (grad_gamma != nullptr) {

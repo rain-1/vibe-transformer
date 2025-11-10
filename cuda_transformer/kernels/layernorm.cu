@@ -13,7 +13,7 @@ namespace kernels {
 
 // Warp-level reduction for sum
 __device__ inline float warp_reduce_sum(float val) {
-    for (int offset = warpSize/2; offset > 0; offset /= 2) {
+    for (int offset = 16; offset > 0; offset /= 2) {
         val += __shfl_down_sync(0xffffffff, val, offset);
     }
     return val;
@@ -60,13 +60,13 @@ __global__ void layernorm_forward_kernel(
 
     // Reduce sum across block
     thread_sum = warp_reduce_sum(thread_sum);
-    if (tid % warpSize == 0) {
-        sdata[tid / warpSize] = thread_sum;
+    if (tid % 32 == 0) {
+        sdata[tid / 32] = thread_sum;
     }
     __syncthreads();
 
-    if (tid < warpSize) {
-        float val = (tid < (blockDim.x + warpSize - 1) / warpSize) ?
+    if (tid < 32) {
+        float val = (tid < (blockDim.x + 31) / 32) ?
                     sdata[tid] : 0.0f;
         val = warp_reduce_sum(val);
         if (tid == 0) {
@@ -90,13 +90,13 @@ __global__ void layernorm_forward_kernel(
 
     // Reduce variance across block
     thread_var = warp_reduce_sum(thread_var);
-    if (tid % warpSize == 0) {
-        sdata[tid / warpSize] = thread_var;
+    if (tid % 32 == 0) {
+        sdata[tid / 32] = thread_var;
     }
     __syncthreads();
 
-    if (tid < warpSize) {
-        float val = (tid < (blockDim.x + warpSize - 1) / warpSize) ?
+    if (tid < 32) {
+        float val = (tid < (blockDim.x + 31) / 32) ?
                     sdata[tid] : 0.0f;
         val = warp_reduce_sum(val);
         if (tid == 0) {
@@ -182,13 +182,13 @@ __global__ void layernorm_backward_kernel(
 
     // Reduce sum1
     thread_sum1 = warp_reduce_sum(thread_sum1);
-    if (tid % warpSize == 0) {
-        sdata[tid / warpSize] = thread_sum1;
+    if (tid % 32 == 0) {
+        sdata[tid / 32] = thread_sum1;
     }
     __syncthreads();
 
-    if (tid < warpSize) {
-        float val = (tid < (blockDim.x + warpSize - 1) / warpSize) ?
+    if (tid < 32) {
+        float val = (tid < (blockDim.x + 31) / 32) ?
                     sdata[tid] : 0.0f;
         val = warp_reduce_sum(val);
         if (tid == 0) {
@@ -200,15 +200,15 @@ __global__ void layernorm_backward_kernel(
 
     // Reduce sum2 (use second half of shared memory)
     thread_sum2 = warp_reduce_sum(thread_sum2);
-    if (tid % warpSize == 0) {
-        sdata[blockDim.x / warpSize + tid / warpSize] = thread_sum2;
+    if (tid % 32 == 0) {
+        sdata[blockDim.x / 32 + tid / 32] = thread_sum2;
     }
     __syncthreads();
 
-    if (tid < warpSize) {
-        int num_warps = (blockDim.x + warpSize - 1) / warpSize;
+    if (tid < 32) {
+        int num_warps = (blockDim.x + 31) / 32;
         float val = (tid < num_warps) ?
-                    sdata[blockDim.x / warpSize + tid] : 0.0f;
+                    sdata[blockDim.x / 32 + tid] : 0.0f;
         val = warp_reduce_sum(val);
         if (tid == 0) {
             sdata[1] = val;
@@ -244,7 +244,7 @@ void layernorm_forward(
 ) {
     int blockSize = 256;
     int gridSize = batch_size;
-    size_t sharedMemSize = (blockSize / warpSize + 2) * sizeof(float);
+    size_t sharedMemSize = (blockSize / 32 + 2) * sizeof(float);
 
     layernorm_forward_kernel<<<gridSize, blockSize, sharedMemSize>>>(
         input, gamma, beta, output, mean, rstd,
@@ -267,7 +267,7 @@ void layernorm_backward(
 ) {
     int blockSize = 256;
     int gridSize = batch_size;
-    size_t sharedMemSize = (blockSize / warpSize * 2 + 2) * sizeof(float);
+    size_t sharedMemSize = (blockSize / 32 * 2 + 2) * sizeof(float);
 
     // Zero out gamma and beta gradients
     if (grad_gamma != nullptr) {
