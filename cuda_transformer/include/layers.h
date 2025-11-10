@@ -19,8 +19,6 @@ class Layer {
 public:
     virtual ~Layer() = default;
 
-    virtual void forward(bool training = true) = 0;
-    virtual void backward() = 0;
     virtual std::vector<Tensor*> parameters() = 0;
     virtual std::string name() const = 0;
 };

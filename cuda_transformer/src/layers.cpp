@@ -60,8 +60,8 @@ void Embedding::backward(const Tensor& grad_output, const Tensor& input) {
     weight_->zero_grad();
 
     kernels::embedding_backward(
-        token_ids,
         grad_output.data(),
+        token_ids,
         weight_->grad(),
         batch_size,
         seq_len,
@@ -477,7 +477,7 @@ std::vector<Tensor*> MultiHeadAttention::parameters() {
 // ============================================================================
 
 FeedForward::FeedForward(int d_model, int d_ff, float dropout)
-    : d_model_(d_model), d_ff_(d_ff), dropout_(dropout) {
+    : dropout_(dropout), d_model_(d_model), d_ff_(d_ff) {
     linear1_ = std::make_unique<Linear>(d_model, d_ff, true);
     linear2_ = std::make_unique<Linear>(d_ff, d_model, true);
 }
